@@ -12,3 +12,4 @@ wheels/
 # Secert
 .env
 character.txt
+*.db
