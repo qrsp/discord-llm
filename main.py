@@ -1,5 +1,6 @@
 import datetime
 import json
+import logging
 import os
 import sqlite3
 import traceback
@@ -16,10 +17,21 @@ from watchdog.observers import Observer
 # 載入 .env 檔案中的環境變數
 load_dotenv()
 
+# 設定 logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('bot.log', encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 MODEL = os.getenv("MODEL")
-SYSTEM_INSTRUCTION_FILE = os.getenv("SYSTEM_INSTRUCTION_FILE")
+SYSTEM_INSTRUCTION_DIR = os.getenv("SYSTEM_INSTRUCTION_DIR")
 _ = os.getenv("ALIASES", "[]")
 ALIASES = json.loads(_)
 DB_NAME = os.getenv("DB_NAME", "conversation.db")
@@ -31,7 +43,7 @@ TEMPERATURE = int(_)
 
 # 檢查金鑰是否存在
 if not DISCORD_BOT_TOKEN or not GEMINI_API_KEY or not MODEL:
-    print("錯誤：請在 .env 檔案中設定 DISCORD_BOT_TOKEN、 GEMINI_API_KEY 和 MODEL")
+    logger.error("錯誤：請在 .env 檔案中設定 DISCORD_BOT_TOKEN、 GEMINI_API_KEY 和 MODEL")
     exit()
 
 SYSTEM_PROMPT = ""
@@ -139,21 +151,45 @@ def get_user_history(user_id: int, limit: int = 10) -> list:
 
 # --- 人設 (System Prompt) 輔助函式 ---
 def load_system_prompt():
-    """從 character.txt 載入系統提示"""
+    """從指定目錄載入所有檔案內容到系統提示"""
     global SYSTEM_PROMPT
     try:
-        with open(SYSTEM_INSTRUCTION_FILE, 'r', encoding='utf-8') as f:
-            SYSTEM_PROMPT = f.read().strip()
-        print(f"成功載入SYSTEM_PROMPT: {SYSTEM_PROMPT[:50]}...")
-    except FileNotFoundError:
-        print(f"警告: {SYSTEM_INSTRUCTION_FILE} 不存在。")
+        if not SYSTEM_INSTRUCTION_DIR or not os.path.exists(SYSTEM_INSTRUCTION_DIR):
+            logger.warning(f"警告: {SYSTEM_INSTRUCTION_DIR} 目錄不存在。")
+            SYSTEM_PROMPT = ""
+            return
+
+        combined_content = []
+        # 讀取目錄中的所有檔案
+        for filename in sorted(os.listdir(SYSTEM_INSTRUCTION_DIR)):
+            file_path = os.path.join(SYSTEM_INSTRUCTION_DIR, filename)
+            # 只處理檔案，跳過子目錄
+            if os.path.isfile(file_path):
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        content = f.read().strip()
+                        if content:  # 只添加非空內容
+                            combined_content.append(f"\n\n{content}")
+                            # 顯示檔名和前50個字
+                            logger.info(f"讀取檔案: {filename}")
+                            logger.info(f"檔案內容前50字: {content[:50]}...")
+                except Exception as e:
+                    logger.warning(f"警告: 無法讀取檔案 {file_path}: {e}")
+
+        SYSTEM_PROMPT = "\n\n".join(combined_content)
+        logger.info(f"成功載入SYSTEM_PROMPT from {len(combined_content)} 個檔案: {SYSTEM_PROMPT[:50]}...")
+    except Exception as e:
+        logger.error(f"載入SYSTEM_PROMPT時發生錯誤: {e}")
+        SYSTEM_PROMPT = ""
 
 
 class FileWatcher():
     def __enter__(self) -> None:
         event_handler = self.FileChangeHandler()
         self.observer = Observer()
-        self.observer.schedule(event_handler, path='.', recursive=False)
+        # 監控指定的目錄
+        if SYSTEM_INSTRUCTION_DIR and os.path.exists(SYSTEM_INSTRUCTION_DIR):
+            self.observer.schedule(event_handler, path=SYSTEM_INSTRUCTION_DIR, recursive=False)
         self.observer.start()
 
     def __exit__(self, exc_type, exc_value, traceback):
@@ -163,7 +199,21 @@ class FileWatcher():
     # 檔案監控事件處理器
     class FileChangeHandler(FileSystemEventHandler):
         def on_modified(self, event):
-            if os.path.abspath(event.src_path) == os.path.abspath(SYSTEM_INSTRUCTION_FILE):
+            # 當目錄中的任何檔案被修改時重新載入
+            if not event.is_directory:
+                logger.info(f"檔案 {event.src_path} 已修改，重新載入SYSTEM_PROMPT...")
+                load_system_prompt()
+
+        def on_created(self, event):
+            # 當目錄中新增檔案時重新載入
+            if not event.is_directory:
+                logger.info(f"檔案 {event.src_path} 已新增，重新載入SYSTEM_PROMPT...")
+                load_system_prompt()
+
+        def on_deleted(self, event):
+            # 當目錄中刪除檔案時重新載入
+            if not event.is_directory:
+                logger.info(f"檔案 {event.src_path} 已刪除，重新載入SYSTEM_PROMPT...")
                 load_system_prompt()
 
 
@@ -173,8 +223,8 @@ async def on_ready():
     """Bot 啟動時執行的動作"""
     setup_database()
     load_system_prompt()
-    print(f'Bot 已登入為 {bot.user}')
-    print('------')
+    logger.info(f'Bot 已登入為 {bot.user}')
+    logger.info('------')
 
 # --- Bot 指令 ---
 @bot.command(name='bot', aliases=ALIASES)
@@ -199,7 +249,7 @@ async def chat_command(ctx: commands.Context, *, message: str):
                 contents=history,
                 config=config,
             )
-            print(response)
+            logger.debug(f"Model: {response}")
 
             # 儲存對話紀錄
             # 使用者訊息
@@ -215,10 +265,11 @@ async def chat_command(ctx: commands.Context, *, message: str):
                 await ctx.reply(chunk)
 
         except ServerError as e:
-            print(f"ServerError：{e}")
+            logger.error(f"ServerError：{e}")
             await ctx.reply(f"ServerError：{e}")
         except Exception as e:
-            traceback.print_exc()
+            logger.error(f"Exception occurred: {e}")
+            logger.error(traceback.format_exc())
             await ctx.reply(f"糟糕，發生錯誤了：{e}")
 
 def split_string_by_length_and_newline(s, max_len):
@@ -248,7 +299,7 @@ def split_string_by_length_and_newline(s, max_len):
     return result
 
 if __name__ == "__main__":
-    if SYSTEM_INSTRUCTION_FILE:
+    if SYSTEM_INSTRUCTION_DIR:
         with FileWatcher():
             bot.run(DISCORD_BOT_TOKEN)
     else:

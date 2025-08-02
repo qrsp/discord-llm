@@ -13,3 +13,4 @@ wheels/
 .env
 character.txt
 *.db
+*.log
