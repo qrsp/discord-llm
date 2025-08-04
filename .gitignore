@@ -11,6 +11,6 @@ wheels/
 
 # Secert
 .env
-character.txt
+system_instructions/
 *.db
 *.log

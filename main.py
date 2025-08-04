@@ -1,3 +1,4 @@
+import argparse
 import datetime
 import json
 import logging
@@ -14,19 +15,63 @@ from google.genai.errors import ServerError
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
+# 解析命令行參數
+def parse_arguments():
+    parser = argparse.ArgumentParser(
+        description='Discord Bot with Gemini AI integration',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+範例:
+  uv run main.py              # 正常模式運行
+  uv run main.py -d           # 除錯模式運行
+  uv run main.py --debug      # 除錯模式運行
+        '''
+    )
+    parser.add_argument(
+        '-d', '--debug',
+        action='store_true',
+        help='啟用除錯模式，顯示詳細的日誌訊息'
+    )
+    return parser.parse_args()
+
 # 載入 .env 檔案中的環境變數
 load_dotenv()
 
-# 設定 logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('bot.log', encoding='utf-8'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+# 解析命令行參數
+args = parse_arguments()
+
+# 設定 main.py 專用的 logger，不影響其他模組
+logger = logging.getLogger('discord_bot')
+# 根據命令行參數設定日誌級別
+log_level = logging.DEBUG if args.debug else logging.INFO
+logger.setLevel(log_level)
+
+if args.debug:
+    logger.debug("除錯模式已啟用")
+
+# 創建格式器
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+# 創建文件處理器
+file_handler = logging.FileHandler('bot.log', encoding='utf-8')
+file_handler.setLevel(log_level)
+file_handler.setFormatter(formatter)
+
+# 創建控制台處理器
+console_handler = logging.StreamHandler()
+console_handler.setLevel(log_level)
+console_handler.setFormatter(formatter)
+
+# 將處理器添加到 logger
+logger.addHandler(file_handler)
+logger.addHandler(console_handler)
+
+# 防止日誌向上傳播到根 logger
+logger.propagate = False
+
+# # 設定 discord.py 的日誌級別（可選：降低 discord.py 的日誌輸出）
+# discord_logger = logging.getLogger('discord')
+# discord_logger.setLevel(logging.WARNING)  # 只顯示警告和錯誤
 
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -115,6 +160,7 @@ def setup_database():
 
 def add_history(user_id: int, role: str, message: str, token_count: int = 0):
     """新增一筆對話紀錄到資料庫"""
+    logger.debug(f"新增歷史紀錄: user_id={user_id}, role={role}, token_count={token_count}")
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute('''
@@ -177,7 +223,7 @@ def load_system_prompt():
                     logger.warning(f"警告: 無法讀取檔案 {file_path}: {e}")
 
         SYSTEM_PROMPT = "\n\n".join(combined_content)
-        logger.info(f"成功載入SYSTEM_PROMPT from {len(combined_content)} 個檔案: {SYSTEM_PROMPT[:50]}...")
+        logger.debug(f"成功載入SYSTEM_PROMPT from {len(combined_content)} 個檔案: {SYSTEM_PROMPT}")
     except Exception as e:
         logger.error(f"載入SYSTEM_PROMPT時發生錯誤: {e}")
         SYSTEM_PROMPT = ""
@@ -231,11 +277,14 @@ async def on_ready():
 async def chat_command(ctx: commands.Context, *, message: str):
     """與 Gemini AI 進行對話"""
     user_id = ctx.author.id
+    logger.debug(f"收到來自用戶 {ctx.author.name} (ID: {user_id}) 的訊息: {message[:100]}...")
 
     async with ctx.typing():
         try:
             # 取得歷史紀錄
             history = get_user_history(user_id)
+            logger.debug(f"載入了 {len(history)} 筆歷史紀錄")
+
             history.append(
                 types.Content(
                     role='user',
@@ -243,13 +292,15 @@ async def chat_command(ctx: commands.Context, *, message: str):
                 ),
             )
             config.system_instruction = SYSTEM_PROMPT
+            logger.debug(f"使用模型: {MODEL}, 系統提示長度: {len(SYSTEM_PROMPT)}")
 
             response = genai_client.models.generate_content(
                 model=MODEL,
                 contents=history,
                 config=config,
             )
-            logger.debug(f"Model: {response}")
+            logger.debug(f"API 回應:\n{response}")
+            logger.info(f"生成回應，token 使用量: {response.usage_metadata.total_token_count}")
 
             # 儲存對話紀錄
             # 使用者訊息
@@ -261,7 +312,9 @@ async def chat_command(ctx: commands.Context, *, message: str):
 
             # 回傳結果到 Discord
             chunks = split_string_by_length_and_newline(response.text, max_len=2000)
-            for chunk in chunks:
+            logger.debug(f"回應被分割成 {len(chunks)} 個片段")
+            for i, chunk in enumerate(chunks):
+                logger.debug(f"發送片段 {i+1}/{len(chunks)}")
                 await ctx.reply(chunk)
 
         except ServerError as e:
