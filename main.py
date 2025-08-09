@@ -3,8 +3,11 @@ import datetime
 import json
 import logging
 import os
+import shutil
 import sqlite3
+import tempfile
 import traceback
+import aiohttp
 
 import discord
 from discord.ext import commands
@@ -12,6 +15,7 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 from google.genai.errors import ServerError
+from pydantic import aliases
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
@@ -325,6 +329,100 @@ async def chat_command(ctx: commands.Context, *, message: str):
             logger.error(traceback.format_exc())
             await ctx.reply(f"糟糕，發生錯誤了：{e}")
 
+@bot.command(name='update_system_prompt', aliases=['up'])
+async def update_system_prompt_command(ctx: commands.Context):
+    """更新 SYSTEM_PROMPT，從訊息的附件下載新的系統指令檔案"""
+    if not SYSTEM_INSTRUCTION_DIR:
+        await ctx.reply("錯誤：未設定 SYSTEM_INSTRUCTION_DIR 環境變數")
+        return
+
+    if not ctx.message.attachments:
+        await ctx.reply("錯誤：請在訊息中附加要更新的系統指令檔案")
+        return
+
+    logger.info(f"用戶 {ctx.author.name} 請求更新 SYSTEM_PROMPT，附件數量: {len(ctx.message.attachments)}")
+
+    async with ctx.typing():
+        temp_backup_dir = None
+        downloaded_files = []
+
+        try:
+            # 創建暫存目錄並備份原有檔案
+            temp_backup_dir = tempfile.mkdtemp(prefix="system_prompt_backup_")
+            logger.info(f"創建暫存備份目錄: {temp_backup_dir}")
+
+            os.makedirs(SYSTEM_INSTRUCTION_DIR, exist_ok=True)
+
+            # 備份原有檔案
+            for filename in os.listdir(SYSTEM_INSTRUCTION_DIR):
+                src_path = os.path.join(SYSTEM_INSTRUCTION_DIR, filename)
+                if os.path.isfile(src_path):
+                    dst_path = os.path.join(temp_backup_dir, filename)
+                    shutil.move(src_path, dst_path)
+                    logger.debug(f"備份檔案: {filename}")
+
+            # 下載附件到 SYSTEM_INSTRUCTION_DIR
+            async with aiohttp.ClientSession() as session:
+                for attachment in ctx.message.attachments:
+                    file_path = os.path.join(SYSTEM_INSTRUCTION_DIR, attachment.filename)
+                    logger.info(f"下載附件: {attachment.filename}")
+
+                    try:
+                        async with session.get(attachment.url) as response:
+                            if response.status == 200:
+                                content = await response.read()
+                                with open(file_path, 'wb') as f:
+                                    f.write(content)
+                                downloaded_files.append(file_path)
+                                logger.info(f"成功下載: {attachment.filename} ({len(content)} bytes)")
+                            else:
+                                raise Exception(f"下載失敗，HTTP 狀態碼: {response.status}")
+                    except Exception as e:
+                        logger.error(f"下載附件 {attachment.filename} 失敗: {e}")
+                        raise
+
+            load_system_prompt()
+            if SYSTEM_PROMPT == "":
+                logger.error("載入 SYSTEM_PROMPT 後發現內容為空，可能讀取檔案有問題")
+                raise Exception("載入 SYSTEM_PROMPT 失敗，內容為空")
+
+            shutil.rmtree(temp_backup_dir)
+            logger.info("SYSTEM_PROMPT 更新成功，暫存目錄已清理")
+
+            await ctx.reply(f"✅ SYSTEM_PROMPT 更新成功！\n已下載 {len(downloaded_files)} 個檔案：\n" +
+                          "\n".join([f"• {os.path.basename(f)}" for f in downloaded_files]))
+
+        except Exception as e:
+            logger.error(f"更新 SYSTEM_PROMPT 失敗: {e}")
+
+            # 清理下載的檔案並還原備份
+            try:
+                # 刪除下載的檔案
+                for file_path in downloaded_files:
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                        logger.debug(f"清理下載檔案: {os.path.basename(file_path)}")
+
+                # 還原備份檔案
+                if temp_backup_dir and os.path.exists(temp_backup_dir):
+                    for filename in os.listdir(temp_backup_dir):
+                        src_path = os.path.join(temp_backup_dir, filename)
+                        dst_path = os.path.join(SYSTEM_INSTRUCTION_DIR, filename)
+                        shutil.move(src_path, dst_path)
+                        logger.debug(f"還原備份檔案: {filename}")
+
+                    # 清理暫存目錄
+                    shutil.rmtree(temp_backup_dir)
+                    logger.info("已還原備份檔案並清理暫存目錄")
+
+                # 重新載入原有的 SYSTEM_PROMPT
+                load_system_prompt()
+
+            except Exception as cleanup_error:
+                logger.error(f"清理和還原過程中發生錯誤: {cleanup_error}")
+
+            await ctx.reply(f"❌ SYSTEM_PROMPT 更新失敗：{e}\n已還原到原始狀態")
+
 def split_string_by_length_and_newline(s, max_len):
     result = []
     start = 0
@@ -353,7 +451,7 @@ def split_string_by_length_and_newline(s, max_len):
 
 if __name__ == "__main__":
     if SYSTEM_INSTRUCTION_DIR:
-        with FileWatcher():
-            bot.run(DISCORD_BOT_TOKEN)
+        # with FileWatcher():
+        bot.run(DISCORD_BOT_TOKEN)
     else:
         bot.run(DISCORD_BOT_TOKEN)
