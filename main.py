@@ -7,17 +7,17 @@ import shutil
 import sqlite3
 import tempfile
 import traceback
-import aiohttp
 
+import aiohttp
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 from google.genai.errors import ServerError
-from pydantic import aliases
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
+
 
 # 解析命令行參數
 def parse_arguments():
@@ -109,25 +109,25 @@ bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents)
 genai_client = genai.Client(api_key=GEMINI_API_KEY)
 
 config = types.GenerateContentConfig(
-    safety_settings = [
+    safety_settings=[
         types.SafetySetting(
-            category=types.HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY ,
+            category=types.HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY,
             threshold=types.HarmBlockThreshold.OFF,
         ),
         types.SafetySetting(
-            category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH ,
+            category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
             threshold=types.HarmBlockThreshold.OFF,
         ),
         types.SafetySetting(
-            category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT ,
+            category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
             threshold=types.HarmBlockThreshold.OFF,
         ),
         types.SafetySetting(
-            category=types.HarmCategory.HARM_CATEGORY_HARASSMENT ,
+            category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
             threshold=types.HarmBlockThreshold.OFF,
         ),
         types.SafetySetting(
-            category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT ,
+            category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
             threshold=types.HarmBlockThreshold.OFF,
         ),
     ],
@@ -156,9 +156,18 @@ def setup_database():
             role TEXT NOT NULL,
             message TEXT NOT NULL,
             token_count INTEGER,
-            timestamp DATETIME NOT NULL
+            timestamp DATETIME NOT NULL,
+            is_deleted INTEGER DEFAULT 0
         )
     ''')
+
+    # 檢查是否需要添加 is_deleted 欄位（向後兼容）
+    cursor.execute("PRAGMA table_info(history)")
+    columns = [column[1] for column in cursor.fetchall()]
+    if 'is_deleted' not in columns:
+        cursor.execute('ALTER TABLE history ADD COLUMN is_deleted INTEGER DEFAULT 0')
+        logger.info("已添加 is_deleted 欄位到 history 表")
+
     conn.commit()
     conn.close()
 
@@ -168,19 +177,19 @@ def add_history(user_id: int, role: str, message: str, token_count: int = 0):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute('''
-        INSERT INTO history (user_id, role, message, token_count, timestamp)
-        VALUES (?, ?, ?, ?, ?)
-    ''', (user_id, role, message, token_count, datetime.datetime.now()))
+        INSERT INTO history (user_id, role, message, token_count, timestamp, is_deleted)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (user_id, role, message, token_count, datetime.datetime.now(), 0))
     conn.commit()
     conn.close()
 
 def get_user_history(user_id: int, limit: int = 10) -> list:
-    """從資料庫獲取指定使用者的歷史訊息"""
+    """從資料庫獲取指定使用者的歷史訊息（只獲取未刪除的記錄）"""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute('''
         SELECT role, message FROM history
-        WHERE user_id = ?
+        WHERE user_id = ? AND is_deleted = 0
         ORDER BY timestamp DESC
         LIMIT ?
     ''', (user_id, limit))
@@ -422,6 +431,34 @@ async def update_system_prompt_command(ctx: commands.Context):
                 logger.error(f"清理和還原過程中發生錯誤: {cleanup_error}")
 
             await ctx.reply(f"❌ SYSTEM_PROMPT 更新失敗：{e}\n已還原到原始狀態")
+
+@bot.command(name='clear_history', aliases=['ch'])
+async def clear_history_command(ctx: commands.Context):
+    """將所有歷史記錄標記為已刪除"""
+    logger.info(f"用戶 {ctx.author.name} (ID: {ctx.author.id}) 請求清除所有歷史記錄")
+
+    async with ctx.typing():
+        try:
+            conn = sqlite3.connect(DB_NAME)
+            cursor = conn.cursor()
+
+            # 獲取要標記為已刪除的記錄數量
+            cursor.execute('SELECT COUNT(*) FROM history WHERE is_deleted = 0')
+            count_before = cursor.fetchone()[0]
+
+            # 將所有記錄標記為已刪除
+            cursor.execute('UPDATE history SET is_deleted = 1 WHERE is_deleted = 0')
+            affected_rows = cursor.rowcount
+
+            conn.commit()
+            conn.close()
+
+            logger.info(f"成功標記 {affected_rows} 筆記錄為已刪除")
+            await ctx.reply(f"✅ 成功清除歷史記錄！\n共標記了 {affected_rows} 筆記錄為已刪除。")
+
+        except Exception as e:
+            logger.error(f"清除歷史記錄失敗: {e}")
+            await ctx.reply(f"❌ 清除歷史記錄失敗：{e}")
 
 def split_string_by_length_and_newline(s, max_len):
     result = []
