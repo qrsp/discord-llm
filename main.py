@@ -15,8 +15,6 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 from google.genai.errors import ServerError
-from watchdog.events import FileSystemEventHandler
-from watchdog.observers import Observer
 
 
 # 解析命令行參數
@@ -241,41 +239,6 @@ def load_system_prompt():
         logger.error(f"載入SYSTEM_PROMPT時發生錯誤: {e}")
         SYSTEM_PROMPT = ""
 
-
-class FileWatcher():
-    def __enter__(self) -> None:
-        event_handler = self.FileChangeHandler()
-        self.observer = Observer()
-        # 監控指定的目錄
-        if SYSTEM_INSTRUCTION_DIR and os.path.exists(SYSTEM_INSTRUCTION_DIR):
-            self.observer.schedule(event_handler, path=SYSTEM_INSTRUCTION_DIR, recursive=False)
-        self.observer.start()
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        self.observer.stop()
-        self.observer.join()
-
-    # 檔案監控事件處理器
-    class FileChangeHandler(FileSystemEventHandler):
-        def on_modified(self, event):
-            # 當目錄中的任何檔案被修改時重新載入
-            if not event.is_directory:
-                logger.info(f"檔案 {event.src_path} 已修改，重新載入SYSTEM_PROMPT...")
-                load_system_prompt()
-
-        def on_created(self, event):
-            # 當目錄中新增檔案時重新載入
-            if not event.is_directory:
-                logger.info(f"檔案 {event.src_path} 已新增，重新載入SYSTEM_PROMPT...")
-                load_system_prompt()
-
-        def on_deleted(self, event):
-            # 當目錄中刪除檔案時重新載入
-            if not event.is_directory:
-                logger.info(f"檔案 {event.src_path} 已刪除，重新載入SYSTEM_PROMPT...")
-                load_system_prompt()
-
-
 # --- Bot 事件監聽 ---
 @bot.event
 async def on_ready():
@@ -487,8 +450,4 @@ def split_string_by_length_and_newline(s, max_len):
     return result
 
 if __name__ == "__main__":
-    if SYSTEM_INSTRUCTION_DIR:
-        # with FileWatcher():
-        bot.run(DISCORD_BOT_TOKEN)
-    else:
-        bot.run(DISCORD_BOT_TOKEN)
+    bot.run(DISCORD_BOT_TOKEN)
