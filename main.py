@@ -277,6 +277,8 @@ async def chat_command(ctx: commands.Context, *, message: str):
             )
             logger.debug(f"API 回應:\n{response}")
             logger.info(f"生成回應，token 使用量: {response.usage_metadata.total_token_count}")
+            if not response.text:
+                raise Exception(response)
 
             # 儲存對話紀錄
             # 使用者訊息
@@ -297,9 +299,9 @@ async def chat_command(ctx: commands.Context, *, message: str):
             logger.error(f"ServerError：{e}")
             await ctx.reply(f"ServerError：{e}")
         except Exception as e:
-            logger.error(f"Exception occurred: {e}")
+            logger.error(f"Exception occurred: {e.args}")
             logger.error(traceback.format_exc())
-            await ctx.reply(f"糟糕，發生錯誤了：{e}")
+            await ctx.reply(f"糟糕，發生錯誤了：{e.args}")
 
 @bot.command(name='update_system_prompt', aliases=['up'])
 async def update_system_prompt_command(ctx: commands.Context):
