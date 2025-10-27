@@ -425,6 +425,35 @@ async def clear_history_command(ctx: commands.Context):
             logger.error(f"清除歷史記錄失敗: {e}")
             await ctx.reply(f"❌ 清除歷史記錄失敗：{e}")
 
+@bot.command(name='clear_my_history', aliases=['del'])
+async def clear_my_history_command(ctx: commands.Context):
+    """將傳送指令的使用者的歷史記錄標記為已刪除"""
+    user_id = ctx.author.id
+    logger.info(f"用戶 {ctx.author.name} (ID: {user_id}) 請求清除自己的歷史記錄")
+
+    async with ctx.typing():
+        try:
+            conn = sqlite3.connect(DB_NAME)
+            cursor = conn.cursor()
+
+            # 獲取該使用者要標記為已刪除的記錄數量
+            cursor.execute('SELECT COUNT(*) FROM history WHERE user_id = ? AND is_deleted = 0', (user_id,))
+            count_before = cursor.fetchone()[0]
+
+            # 將該使用者的記錄標記為已刪除
+            cursor.execute('UPDATE history SET is_deleted = 1 WHERE user_id = ? AND is_deleted = 0', (user_id,))
+            affected_rows = cursor.rowcount
+
+            conn.commit()
+            conn.close()
+
+            logger.info(f"成功標記用戶 {user_id} 的 {affected_rows} 筆記錄為已刪除")
+            await ctx.reply(f"✅ 成功清除您的歷史記錄！\n共標記了 {affected_rows} 筆記錄為已刪除。")
+
+        except Exception as e:
+            logger.error(f"清除用戶 {user_id} 歷史記錄失敗: {e}")
+            await ctx.reply(f"❌ 清除您的歷史記錄失敗：{e}")
+
 def split_string_by_length_and_newline(s, max_len):
     result = []
     start = 0
