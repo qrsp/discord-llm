@@ -473,9 +473,9 @@ def split_string_by_length_and_newline(s, max_len):
             last_newline = len(sub) - 1  # 或者找其他替代策略
 
         chunk = s[start:start + last_newline + 1]
-        if chunk.strip():
-            result.append(chunk)
-        result.append(chunk)
+        if stripped := chunk.strip():
+            result.append(stripped)
+
         start += last_newline + 1
 
     return result
